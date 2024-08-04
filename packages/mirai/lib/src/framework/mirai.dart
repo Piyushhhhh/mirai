@@ -19,15 +19,8 @@ typedef ErrorWidgetBuilder = Widget Function(
 
 typedef LoadingWidgetBuilder = Widget Function(BuildContext context);
 
-/// The `Mirai` class is a central part of the Mirai framework.
-/// It provides methods to parse and render widgets from JSON, handle actions from JSON, and fetch and render widgets from network requests or assets.
-///
-/// The `Mirai` class uses a registry of parsers.md (`MiraiParser`) and action parsers.md (`MiraiActionParser`) to handle different types of widgets and actions.
-/// These parsers.md can be registered during the initialization of the `Mirai` class.
-///
-/// The `Mirai` class also provides utility methods to convert a widget to a `PreferredSizeWidget`.
 class Mirai {
-  static final _parsers = <MiraiParser>[
+  static final List<MiraiParser> _defaultParsers = [
     const MiraiContainerParser(),
     const MiraiTextParser(),
     const MiraiTextFieldParser(),
@@ -82,7 +75,7 @@ class Mirai {
     const MiraiTableCellParser(),
   ];
 
-  static final _actionParsers = <MiraiActionParser>[
+  static final List<MiraiActionParser> _defaultActionParsers = [
     const MiraiNoneActionParser(),
     const MiraiNavigateActionParser(),
     const MiraiNetworkRequestParser(),
@@ -97,27 +90,25 @@ class Mirai {
     List<MiraiActionParser> actionParsers = const [],
     Dio? dio,
   }) async {
-    _parsers.addAll(parsers);
-    _actionParsers.addAll(actionParsers);
-    MiraiRegistry.instance.registerAll(_parsers);
-    MiraiRegistry.instance.registerAllActions(_actionParsers);
+    MiraiRegistry.instance.registerAll([..._defaultParsers, ...parsers]);
+    MiraiRegistry.instance.registerAllActions([..._defaultActionParsers, ...actionParsers]);
     MiraiNetworkService.initialize(dio ?? Dio());
   }
 
   static Widget? fromJson(Map<String, dynamic>? json, BuildContext context) {
+    if (json == null) return null;
+
     try {
-      if (json != null) {
-        String widgetType = json['type'];
-        MiraiParser? miraiParser = MiraiRegistry.instance.getParser(widgetType);
-        if (miraiParser != null) {
-          final model = miraiParser.getModel(json);
-          return miraiParser.parse(context, model);
-        } else {
-          Log.w('Widget type [$widgetType] not supported');
-        }
+      final String widgetType = json['type'];
+      final MiraiParser? parser = MiraiRegistry.instance.getParser(widgetType);
+      if (parser != null) {
+        final model = parser.getModel(json);
+        return parser.parse(context, model);
+      } else {
+        Log.w('Widget type [$widgetType] not supported');
       }
     } catch (e) {
-      Log.e(e);
+      Log.e('Error parsing widget from JSON: $e');
     }
     return null;
   }
@@ -126,20 +117,19 @@ class Mirai {
     Map<String, dynamic>? json,
     BuildContext context,
   ) {
+    if (json == null || json['actionType'] == null) return null;
+
     try {
-      if (json != null && json['actionType'] != null) {
-        String actionType = json['actionType'];
-        MiraiActionParser? miraiActionParser =
-            MiraiRegistry.instance.getActionParser(actionType);
-        if (miraiActionParser != null) {
-          final model = miraiActionParser.getModel(json);
-          return miraiActionParser.onCall(context, model);
-        } else {
-          Log.w('Action type [$actionType] not supported');
-        }
+      final String actionType = json['actionType'];
+      final MiraiActionParser? actionParser = MiraiRegistry.instance.getActionParser(actionType);
+      if (actionParser != null) {
+        final model = actionParser.getModel(json);
+        return actionParser.onCall(context, model);
+      } else {
+        Log.w('Action type [$actionType] not supported');
       }
     } catch (e) {
-      Log.e(e);
+      Log.e('Error handling action from JSON: $e');
     }
     return null;
   }
@@ -150,63 +140,46 @@ class Mirai {
     LoadingWidgetBuilder? loadingWidget,
     ErrorWidgetBuilder? errorWidget,
   }) {
-    return FutureBuilder<Response?>(
+    return _buildFutureWidget(
       future: MiraiNetworkService.request(context, request),
-      builder: (context, snapshot) {
-        switch (snapshot.connectionState) {
-          case ConnectionState.waiting:
-            Widget? widget;
-            if (loadingWidget != null) {
-              widget = loadingWidget(context);
-              return widget;
-            }
-            break;
-          case ConnectionState.done:
-            if (snapshot.hasData) {
-              final json = jsonDecode(snapshot.data.toString());
-              return Mirai.fromJson(json, context) ?? const SizedBox();
-            } else if (snapshot.hasError) {
-              Log.e(snapshot.error);
-              if (errorWidget != null) {
-                final widget = errorWidget(context, snapshot.error);
-                return widget;
-              }
-            }
-            break;
-          default:
-            break;
-        }
-        return const SizedBox();
-      },
+      context: context,
+      loadingWidget: loadingWidget,
+      errorWidget: errorWidget,
     );
   }
 
-  static Widget? fromAssets(
+  static Widget fromAssets(
     String assetPath, {
     LoadingWidgetBuilder? loadingWidget,
     ErrorWidgetBuilder? errorWidget,
   }) {
-    return FutureBuilder<String>(
+    return _buildFutureWidget(
       future: rootBundle.loadString(assetPath),
+      context: context,
+      loadingWidget: loadingWidget,
+      errorWidget: errorWidget,
+    );
+  }
+
+  static Widget _buildFutureWidget({
+    required Future<dynamic> future,
+    required BuildContext context,
+    LoadingWidgetBuilder? loadingWidget,
+    ErrorWidgetBuilder? errorWidget,
+  }) {
+    return FutureBuilder<dynamic>(
+      future: future,
       builder: (context, snapshot) {
         switch (snapshot.connectionState) {
           case ConnectionState.waiting:
-            Widget? widget;
-            if (loadingWidget != null) {
-              widget = loadingWidget(context);
-              return widget;
-            }
-            break;
+            return loadingWidget?.call(context) ?? const SizedBox();
           case ConnectionState.done:
             if (snapshot.hasData) {
               final json = jsonDecode(snapshot.data.toString());
               return Mirai.fromJson(json, context) ?? const SizedBox();
             } else if (snapshot.hasError) {
-              Log.e(snapshot.error);
-              if (errorWidget != null) {
-                final widget = errorWidget(context, snapshot.error);
-                return widget;
-              }
+              Log.e('Error loading data: ${snapshot.error}');
+              return errorWidget?.call(context, snapshot.error) ?? const SizedBox();
             }
             break;
           default:
@@ -219,10 +192,5 @@ class Mirai {
 }
 
 extension MiraiExtension on Widget? {
-  PreferredSizeWidget? get toPreferredSizeWidget {
-    if (this != null) {
-      return this as PreferredSizeWidget;
-    }
-    return null;
-  }
+  PreferredSizeWidget? get toPreferredSizeWidget => this as PreferredSizeWidget?;
 }
